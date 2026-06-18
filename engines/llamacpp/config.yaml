@@ -1,0 +1,50 @@
+# llama.cpp Server Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Toggle these parameters to sweep the benchmark matrix.
+# This file is hot-patched by benchmark_runner.py during automated sweeps.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Model Path ────────────────────────────────────────────────────────────────
+# GGUF variants correspond to weight format benchmark axis:
+#   Q4_K_M  → GGUF 4-bit quantized (smallest, fastest, most degraded)
+#   Q8_0    → GGUF 8-bit quantized (balanced)
+#   F16     → GGUF FP16 baseline (largest, reference quality)
+model_path: /models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf
+model_alias: llama-3-8b-instruct
+
+# ── Static Memory Allocation ──────────────────────────────────────────────────
+# llama.cpp uses STATIC allocation (contrast with vLLM PagedAttention).
+# n_ctx: maximum context length — pre-allocated at startup.
+# n_batch: batch size for prompt processing (static, not dynamic).
+#   Benchmark axis: 1, 8, 32, 512
+n_ctx: 4096
+n_batch: 512
+n_ubatch: 512
+
+# ── CPU / Thread Allocation ───────────────────────────────────────────────────
+# Static thread count — key difference from vLLM's dynamic scheduling.
+n_threads: 8
+n_threads_batch: 8
+
+# ── GPU Offloading ────────────────────────────────────────────────────────────
+# n_gpu_layers: number of transformer layers offloaded to CUDA.
+# Set to -1 to offload all layers (recommended for GPU benchmarking).
+# Set to 0 for CPU-only mode.
+n_gpu_layers: 35
+main_gpu: 0
+
+# ── Memory Mapping ────────────────────────────────────────────────────────────
+# use_mmap: memory-map model weights (faster cold start, shared between processes)
+# use_mlock: lock weights in RAM (prevents swapping)
+use_mmap: true
+use_mlock: false
+
+# ── Serving ───────────────────────────────────────────────────────────────────
+host: 0.0.0.0
+port: 8080
+# Number of parallel request slots (static allocation, not dynamic like vLLM)
+n_parallel: 8
+cont_batching: false  # set true to enable continuous batching (llama.cpp >=b3000)
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+log_format: json

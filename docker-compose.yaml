@@ -1,0 +1,222 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM Inference Benchmarking Harness — Docker Compose
+# ─────────────────────────────────────────────────────────────────────────────
+# Usage:
+#   docker compose --profile vllm up -d        # Start vLLM + telemetry stack
+#   docker compose --profile llamacpp up -d    # Start llama.cpp + telemetry stack
+#   docker compose --profile telemetry up -d   # Prometheus + Grafana only
+#   docker compose down                        # Stop all services
+#
+# Prerequisites:
+#   • .env file with HF_TOKEN, GEMINI_API_KEY, etc. (copy from .env.example)
+#   • NVIDIA GPU with CUDA 12.1+, Docker with nvidia-container-toolkit
+#   • GGUF model files in ./models/ for llama.cpp profile
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+# ── Shared networking ─────────────────────────────────────────────────────────
+networks:
+  benchmark-net:
+    driver: bridge
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  prometheus-data:
+  grafana-data:
+  model-cache:        # HuggingFace model cache for vLLM
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Inference Engines
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── vLLM Engine ─────────────────────────────────────────────────────────────
+  vllm-engine:
+    profiles: [vllm]
+    build:
+      context: ./engines/vllm
+      dockerfile: Dockerfile
+    image: benchmark/vllm-engine:latest
+    container_name: vllm-engine
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_TOKEN=${HF_TOKEN}
+      - HF_HUB_CACHE=/root/.cache/huggingface
+      # Override default CMD parameters via env for hot-patching
+      - VLLM_MODEL=${VLLM_MODEL_NAME:-meta-llama/Meta-Llama-3-8B-Instruct}
+      - VLLM_DTYPE=${VLLM_DTYPE:-auto}
+      - VLLM_QUANTIZATION=${VLLM_QUANTIZATION:-}
+      - VLLM_KV_CACHE_DTYPE=${VLLM_KV_CACHE_DTYPE:-auto}
+      - VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-32}
+      - VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.90}
+    command: >
+      --model ${VLLM_MODEL_NAME:-meta-llama/Meta-Llama-3-8B-Instruct}
+      --dtype ${VLLM_DTYPE:-auto}
+      --kv-cache-dtype ${VLLM_KV_CACHE_DTYPE:-auto}
+      --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.90}
+      --max-model-len 4096
+      --max-num-seqs ${VLLM_MAX_NUM_SEQS:-32}
+      --enable-chunked-prefill
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-cache:/root/.cache/huggingface
+      - ./engines/vllm/config.yaml:/app/config.yaml:ro
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s  # Model loading takes time
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── llama.cpp Engine ─────────────────────────────────────────────────────────
+  llamacpp-engine:
+    profiles: [llamacpp]
+    build:
+      context: ./engines/llamacpp
+      dockerfile: Dockerfile
+    image: benchmark/llamacpp-engine:latest
+    container_name: llamacpp-engine
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    command: >
+      --model /models/${LLAMACPP_MODEL_FILE:-Meta-Llama-3-8B-Instruct-Q4_K_M.gguf}
+      --alias llama-3-8b-instruct
+      --ctx-size 4096
+      --n-gpu-layers ${LLAMACPP_GPU_LAYERS:-35}
+      --threads ${LLAMACPP_THREADS:-8}
+      --batch-size ${LLAMACPP_BATCH_SIZE:-512}
+      --parallel ${LLAMACPP_PARALLEL:-8}
+      --host 0.0.0.0
+      --port 8080
+      --log-format json
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro    # Mount GGUF models from local ./models/ directory
+      - ./engines/llamacpp/config.yaml:/app/config.yaml:ro
+    networks:
+      - benchmark-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── nvidia-smi Prometheus Exporter ───────────────────────────────────────────
+  # Exports GPU VRAM usage, utilization, temperature, and power draw
+  nvidia-exporter:
+    profiles: [vllm, llamacpp, telemetry]
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04
+    container_name: nvidia-exporter
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - DCGM_EXPORTER_COLLECTORS=/etc/dcgm-exporter/default-counters.csv
+    ports:
+      - "9400:9400"
+    networks:
+      - benchmark-net
+    cap_add:
+      - SYS_ADMIN
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── Node Exporter (CPU / Memory / Disk) ──────────────────────────────────────
+  node-exporter:
+    profiles: [vllm, llamacpp, telemetry]
+    image: prom/node-exporter:v1.8.1
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    pid: host
+    ports:
+      - "9100:9100"
+    networks:
+      - benchmark-net
+
+  # ── Prometheus ────────────────────────────────────────────────────────────────
+  prometheus:
+    profiles: [vllm, llamacpp, telemetry]
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'  # Allow config reload via POST /-/reload
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - benchmark-net
+    depends_on:
+      - node-exporter
+      - nvidia-exporter
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  grafana:
+    profiles: [vllm, llamacpp, telemetry]
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-benchmark123}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - benchmark-net
+    depends_on:
+      - prometheus

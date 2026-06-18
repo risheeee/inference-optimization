@@ -1,0 +1,45 @@
+# vLLM Engine Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Toggle these parameters to sweep the benchmark matrix.
+# This file is hot-patched by benchmark_runner.py during automated sweeps.
+# ─────────────────────────────────────────────────────────────────────────────
+
+model: meta-llama/Meta-Llama-3-8B-Instruct
+
+# ── Weight Precision ──────────────────────────────────────────────────────────
+# Options: auto (FP16 baseline) | float8 (FP8 weights)
+# For AWQ/GPTQ, set quantization below and keep dtype: auto
+dtype: auto
+
+# ── Weight Quantization ───────────────────────────────────────────────────────
+# Options: null (FP16 baseline) | awq | gptq | squeezellm
+# Requires the corresponding quantized model weights
+quantization: null
+
+# ── KV Cache Precision ────────────────────────────────────────────────────────
+# Options: auto (matches dtype, typically FP16) | fp8 (compressed KV cache)
+# FP8 KV cache reduces VRAM usage ~2x with minimal quality impact on Hopper+
+kv_cache_dtype: auto
+
+# ── Memory Management ─────────────────────────────────────────────────────────
+# Fraction of GPU VRAM allocated to the KV cache block pool (PagedAttention).
+# Lower = less VRAM used but lower max concurrency.
+gpu_memory_utilization: 0.90
+max_model_len: 4096
+
+# ── Batching Strategy ─────────────────────────────────────────────────────────
+# enable_chunked_prefill: enables continuous/in-flight batching
+# max_num_seqs: effective maximum batch size ceiling
+# max_num_batched_tokens: maximum tokens processed in one forward pass
+enable_chunked_prefill: true
+max_num_seqs: 32
+max_num_batched_tokens: 8192
+
+# ── Serving ───────────────────────────────────────────────────────────────────
+host: 0.0.0.0
+port: 8000
+tensor_parallel_size: 1  # increase for multi-GPU
+
+# ── Telemetry ─────────────────────────────────────────────────────────────────
+# vLLM natively exposes Prometheus metrics at /metrics
+disable_log_stats: false

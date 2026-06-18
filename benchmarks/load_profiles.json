@@ -1,0 +1,87 @@
+{
+  "profiles": {
+    "short_qa": {
+      "description": "Rapid-fire short question-answer pairs (~10-50 tokens). Models burst throughput under high concurrency.",
+      "target_prompt_tokens": 30,
+      "target_output_tokens": 64,
+      "total_requests": 200,
+      "default_concurrency": 32,
+      "prompts": [
+        "What is the capital of France?",
+        "Who wrote 'To Kill a Mockingbird'?",
+        "What is 17 multiplied by 23?",
+        "In what year did World War II end?",
+        "What is the chemical symbol for gold?",
+        "Who invented the telephone?",
+        "What is the speed of light in meters per second?",
+        "What programming language was Python named after?",
+        "How many bones are in the adult human body?",
+        "What is the largest planet in our solar system?",
+        "What is the boiling point of water at sea level in Celsius?",
+        "Who painted the Sistine Chapel ceiling?",
+        "What is the currency of Japan?",
+        "Which element has the atomic number 79?",
+        "What is the time complexity of binary search?",
+        "What does HTTP stand for?",
+        "Who developed the theory of general relativity?",
+        "What is the smallest prime number?",
+        "What does RAM stand for in computing?",
+        "What is the most abundant gas in Earth's atmosphere?"
+      ]
+    },
+    "medium_reasoning": {
+      "description": "Medium-length chain-of-thought reasoning tasks (~200-500 tokens). Tests sustained throughput with complex outputs.",
+      "target_prompt_tokens": 300,
+      "target_output_tokens": 256,
+      "total_requests": 100,
+      "default_concurrency": 16,
+      "prompts": [
+        "Explain step-by-step how a transformer's self-attention mechanism works. Focus on the query, key, and value matrices and how they produce weighted outputs.",
+        "A factory produces 1,200 widgets per day operating two 8-hour shifts. If each widget requires 0.4 machine-hours of processing, and they want to add a third shift, how many additional machines do they need? Reason through each step carefully.",
+        "Compare and contrast synchronous and asynchronous programming paradigms. When would you choose one over the other? Provide concrete examples in Python.",
+        "Explain the CAP theorem in distributed systems. What does each letter stand for, and what real-world trade-offs does it force engineers to make?",
+        "Walk through the bubble sort algorithm step-by-step with the array [64, 34, 25, 12, 22, 11, 90]. Show each pass.",
+        "What are the key differences between L1, L2, and L3 CPU cache? How does cache hierarchy affect memory access latency and program performance?",
+        "Describe the process of TCP three-way handshake. What packets are exchanged, what state transitions occur, and why is this design necessary?",
+        "A company has a 12% annual churn rate and 500 current customers. If they acquire 5 new customers per month, project their customer count at the end of 2 years. Show your reasoning.",
+        "Explain gradient descent optimization. What is the intuition behind it, what are common variants (SGD, Adam, RMSProp), and when does each variant perform best?",
+        "What is ACID compliance in databases? Explain each property with a concrete banking transaction example that shows why each property matters."
+      ]
+    },
+    "long_context": {
+      "description": "Long context summarization and extraction tasks (~1000-2000 tokens input). Stresses memory management and KV cache.",
+      "target_prompt_tokens": 1500,
+      "target_output_tokens": 512,
+      "total_requests": 30,
+      "default_concurrency": 4,
+      "prompts": [
+        "Please read the following technical document and provide a comprehensive summary of the key architectural decisions, their trade-offs, and the final recommendations made. Then extract: (1) the top 3 problems identified, (2) the proposed solutions for each, and (3) estimated implementation timelines if mentioned.\n\nDocument: The Legacy Migration Project Technical Assessment (Q3 2024)\n\nExecutive Summary:\nAfter extensive analysis of our current monolithic architecture, the engineering committee has identified critical bottlenecks preventing the business from scaling to the projected 10x traffic growth expected over the next 18 months. This assessment covers four major architectural domains: data layer architecture, service decomposition strategy, API gateway consolidation, and observability infrastructure.\n\nSection 1: Data Layer Architecture\nThe current PostgreSQL deployment operates as a single primary node with two hot-standby replicas. While this configuration has served adequately up to our current 50K daily active users, performance profiling reveals that read queries account for 78% of database load, yet all reads are being served from the primary node due to a misconfiguration in the ORM connection pooling settings. This means both read and write traffic are competing for the same 32 CPU cores and 256GB RAM.\n\nThe connection pool currently caps at 200 simultaneous connections. Under peak load (typically Tuesday through Thursday between 2 PM and 6 PM EST), the application has been observed exhausting this pool, causing request queuing that adds 800-1200ms to P95 latency. Worse, when connection exhaustion occurs, the health check endpoint also fails, causing the load balancer to cycle instances, creating a cascading failure pattern.\n\nProposed Solution for Data Layer: Implement read replica routing at the application level using a custom connection resolver that inspects query intent. Introduce PgBouncer as a connection proxy to handle pooling more efficiently. Expand the connection pool limit to 1000 at the proxy level. Estimated implementation: 6 weeks for Phase 1 (replica routing), 4 additional weeks for Phase 2 (PgBouncer deployment and tuning).\n\nSection 2: Service Decomposition Strategy\nThe monolith currently encompasses seven distinct business domains: user authentication, billing and subscriptions, content management, notification delivery, analytics aggregation, search indexing, and the core product API. Code analysis reveals that the billing and notification domains are the most tightly coupled, sharing 23 database tables and 47 cross-service function calls that bypass the API layer entirely.\n\nThe team proposes a strangler fig pattern for decomposition, beginning with the search indexing service since it has the clearest data boundary (only 3 shared tables) and an independent scaling profile. Elasticsearch integration will replace the current PostgreSQL full-text search, which is consuming disproportionate CPU resources during index refresh cycles.\n\nEstimated decomposition timeline: 8 months for full service separation across all 7 domains, with search as the first extraction (months 1-2), followed by analytics (months 3-4), then billing (months 5-7), with the remaining domains in month 8.\n\nSection 3: API Gateway Consolidation\nThree separate API surfaces currently exist: a REST API (v1, 2019), a GraphQL endpoint (v2, 2021), and a WebSocket gateway for real-time features (2022). These are maintained by three separate teams with no shared authentication middleware, resulting in three separate JWT validation implementations that have drifted significantly in behavior. One notable divergence: the REST API enforces a 2048-byte limit on JWT payloads while the GraphQL endpoint has no such limit, creating a security inconsistency.\n\nThe proposal is to deploy Kong Gateway as a unified ingress with plugins for JWT validation, rate limiting, and request logging. All three API surfaces would route through Kong, eliminating the duplicate authentication logic and providing centralized observability for all API traffic.\n\nSection 4: Observability Infrastructure\nCurrent monitoring is a patchwork of Datadog APM (application traces), Cloudwatch (infrastructure metrics), and a homegrown log aggregation system built on Elasticsearch. There is no unified correlation between a user request trace, the infrastructure metric spike it may have caused, and the logs generated during that request. This makes incident root cause analysis extremely time-consuming, with the team reporting average MTTR of 4.2 hours.\n\nThe recommended solution is to adopt the OpenTelemetry standard across all services, shipping traces to Tempo, metrics to Prometheus, and logs to Loki — all visualized through Grafana dashboards. This provides vendor-neutral observability with full signal correlation.\n\nFinal Recommendations Priority Order:\n1. Fix read replica routing immediately (highest ROI, 2-3 week implementation)\n2. Deploy PgBouncer connection proxy (prevents cascading failures)\n3. Extract search service (unblocks Elasticsearch migration)\n4. Deploy Kong API Gateway (security and observability wins)\n5. Begin analytics service extraction in parallel with Kong deployment\n6. Implement OpenTelemetry instrumentation service by service as decomposition proceeds"
+      ]
+    },
+    "burst_spike": {
+      "description": "Sudden traffic burst simulation. Sends all requests with maximum concurrency to test engine stability under spike conditions.",
+      "target_prompt_tokens": 100,
+      "target_output_tokens": 128,
+      "total_requests": 150,
+      "default_concurrency": 64,
+      "prompts": [
+        "Summarize the key differences between SQL and NoSQL databases in 3 bullet points.",
+        "What are the SOLID principles in object-oriented design? List each with a one-sentence description.",
+        "Explain the difference between horizontal and vertical scaling in 2-3 sentences.",
+        "What is a deadlock in operating systems and what are two ways to prevent it?",
+        "Describe the producer-consumer problem and name one common solution pattern.",
+        "What is the difference between a process and a thread? When would you use each?",
+        "Explain what a REST API is and name its six architectural constraints.",
+        "What is the difference between eager loading and lazy loading in software development?",
+        "Name three advantages and three disadvantages of microservices architecture.",
+        "What is the difference between authentication and authorization?"
+      ]
+    }
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "description": "Load profiles for LLM inference benchmarking harness",
+    "created": "2024-01-01",
+    "note": "Prompt token counts are approximate. Actual counts depend on the tokenizer used by the serving engine."
+  }
+}
