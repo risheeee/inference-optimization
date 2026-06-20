@@ -23,7 +23,7 @@ EXPOSE 8000
 # The config.yaml values are passed as CLI flags.
 # docker-compose overrides specific flags via environment variables.
 # HF_TOKEN must be set in the environment or .env file for gated models.
-ENTRYPOINT ["python", "-m", "vllm.entrypoints.openai.api_server"]
+ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 CMD [ \
     "--model",                    "meta-llama/Meta-Llama-3-8B-Instruct", \
     "--dtype",                    "auto", \

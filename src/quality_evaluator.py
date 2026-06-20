@@ -43,10 +43,15 @@ import re
 import sys
 import time
 import asyncio
-import aiohttp
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
+
+# ── Windows asyncio fix ───────────────────────────────────────────────────────
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+import aiohttp
 
 import typer
 from dotenv import load_dotenv
@@ -107,7 +112,11 @@ async def gemini_judge_score(
     """
     Call Gemini Flash to score a model response on a 1-5 scale.
     Returns {"score": int, "reason": str} or {"score": None, "reason": "error msg"}.
+    When Gemini triggers a safety filter (finishReason=SAFETY), automatically
+    falls back to heuristic keyword matching.
     """
+    ref_for_fallback = reference  # captured for safety-filter fallback
+
     if not GEMINI_API_KEY:
         return {"score": None, "reason": "GEMINI_API_KEY not set — using heuristic fallback"}
 
@@ -127,8 +136,10 @@ async def gemini_judge_score(
         "contents": [{"role": "user", "parts": [{"text": user_message}]}],
         "generationConfig": {
             "temperature": 0.0,
-            "maxOutputTokens": 128,
-            "responseMimeType": "application/json",
+            "maxOutputTokens": 256,
+            # NOTE: No responseMimeType — it makes Gemini more likely to
+            # trigger safety filters on eval prompts that mention
+            # 'vulnerabilities', 'data loss', 'security', etc.
         },
     }
 
@@ -139,9 +150,32 @@ async def gemini_judge_score(
                     if resp.status == 429:
                         await asyncio.sleep(2 ** attempt)
                         continue
+                    if resp.status != 200:
+                        raw = await resp.text()
+                        raise ValueError(f"HTTP {resp.status}: {raw[:200]}")
+
                     data = await resp.json()
-                    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    parsed = json.loads(text)
+
+                    # Handle safety-filtered / blocked responses
+                    candidate = data.get("candidates", [{}])[0]
+                    finish_reason = candidate.get("finishReason", "STOP")
+                    if finish_reason in ("SAFETY", "RECITATION", "OTHER"):
+                        # Fall back to heuristic — don't retry, it will keep failing
+                        return heuristic_reasoning_score(response, ref_for_fallback)
+
+                    # Extract text safely
+                    parts = candidate.get("content", {}).get("parts", [])
+                    if not parts:
+                        raise ValueError("Empty content parts in Gemini response")
+                    text = parts[0].get("text", "").strip()
+                    if not text:
+                        return heuristic_reasoning_score(response, ref_for_fallback)
+
+                    # Parse JSON score — Gemini may wrap it in markdown
+                    json_match = re.search(r'\{.*?\}', text, re.DOTALL)
+                    if not json_match:
+                        raise ValueError(f"No JSON found in: {text[:100]}")
+                    parsed = json.loads(json_match.group())
                     score = int(parsed.get("score", 0))
                     if not (1 <= score <= 5):
                         raise ValueError(f"Score out of range: {score}")
@@ -152,6 +186,7 @@ async def gemini_judge_score(
                 await asyncio.sleep(1)
 
     return {"score": None, "reason": "All judge attempts failed"}
+
 
 
 def heuristic_reasoning_score(response: str, expected_answer: str) -> dict:

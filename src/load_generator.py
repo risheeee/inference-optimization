@@ -30,6 +30,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+# ── Windows asyncio fix ───────────────────────────────────────────────────────
+# Python 3.8+ on Windows defaults to ProactorEventLoop which has a known
+# __del__ cleanup bug (AttributeError: 'NoneType' object has no attribute 'close').
+# Switch to SelectorEventLoop to avoid this.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import aiohttp
 import typer
 from dotenv import load_dotenv
@@ -343,40 +350,11 @@ async def _run_mock_server(port: int = 9999):
 # ══════════════════════════════════════════════════════════════════════════════
 # Locust Integration
 # ══════════════════════════════════════════════════════════════════════════════
-
-try:
-    from locust import HttpUser, between, task  # type: ignore
-
-    class LLMUser(HttpUser):
-        """
-        Locust user class for distributed load testing.
-        Run with: locust -f src/load_generator.py --headless -u 32 -r 4
-        """
-        wait_time = between(0.1, 0.5)
-        host = os.getenv("VLLM_BASE_URL", "http://localhost:8000")
-
-        PROMPTS = [
-            "What is the capital of France?",
-            "Explain the transformer architecture in 3 sentences.",
-            "Write a Python function to reverse a linked list.",
-        ]
-
-        @task
-        def completions_request(self):
-            import random
-            prompt = random.choice(self.PROMPTS)
-            payload = {
-                "model": os.getenv("VLLM_MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct"),
-                "prompt": prompt,
-                "max_tokens": 128,
-                "temperature": 0.0,
-            }
-            with self.client.post("/v1/completions", json=payload, catch_response=True) as resp:
-                if resp.status_code != 200:
-                    resp.failure(f"Got status {resp.status_code}")
-
-except ImportError:
-    pass  # Locust not installed, that's fine
+# Locust uses gevent which monkey-patches ssl at import time.
+# This conflicts with aiohttp (already imported above).
+# Locust user class lives in src/locustfile.py — run it with:
+#   locust -f src/locustfile.py --headless -u 32 -r 4 --host http://localhost:8000
+# DO NOT import locust here.
 
 
 # ══════════════════════════════════════════════════════════════════════════════

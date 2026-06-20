@@ -55,13 +55,14 @@ services:
       - VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-32}
       - VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.90}
     command: >
-      --model ${VLLM_MODEL_NAME:-meta-llama/Meta-Llama-3-8B-Instruct}
-      --dtype ${VLLM_DTYPE:-auto}
+      --model ${VLLM_MODEL_NAME:-casperhansen/llama-3-8b-instruct-awq}
+      --quantization ${VLLM_QUANTIZATION:-awq}
+      --dtype ${VLLM_DTYPE:-half}
       --kv-cache-dtype ${VLLM_KV_CACHE_DTYPE:-auto}
-      --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.90}
-      --max-model-len 4096
+      --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.85}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-2048}
       --max-num-seqs ${VLLM_MAX_NUM_SEQS:-32}
-      --enable-chunked-prefill
+      --enforce-eager
       --host 0.0.0.0
       --port 8000
     ports:
@@ -75,8 +76,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
-      retries: 10
-      start_period: 120s  # Model loading takes time
+      retries: 15
+      start_period: 300s  # AWQ model download + load on first run
     deploy:
       resources:
         reservations:
