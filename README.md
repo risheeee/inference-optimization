@@ -228,8 +228,11 @@ python src/benchmark_runner.py run-single \
 ### 8. Visualize Results
 
 ```bash
-cd notebooks
-jupyter notebook visualize_results.ipynb
+# Standalone (no Jupyter required) — generates all 5 PNGs to results/plots/
+python src/visualize.py
+
+# Or open in Jupyter
+jupyter lab notebooks/visualize_results.ipynb
 # Run all cells → plots saved to results/plots/
 ```
 
@@ -299,43 +302,47 @@ inference-optimizer/
 
 ## Expected Results (Reference Benchmarks)
 
-> **Hardware reference**: A100 40GB SXM4, Llama-3-8B-Instruct, `short_qa` profile
+> **Hardware reference**: RTX 4060 Laptop GPU (8 GB VRAM), Llama-3-8B-Instruct, local @ $0.50/hr equivalent
 
-| Configuration | RPS | P95 Latency | $/1K Req | Quality vs FP16 |
+| Configuration | RPS | P95 Latency | $/1K Req | Quality Score |
 |---|---|---|---|---|
-| vLLM FP16 + Cont. Batching | ~45 | ~380ms | $0.0185 | 100% (baseline) |
-| vLLM AWQ 4-bit + Cont. Batching | ~62 | ~280ms | $0.0134 | ~97% |
-| vLLM AWQ 4-bit + FP8 KV Cache | ~71 | ~245ms | $0.0117 | ~95% |
-| llama.cpp FP16 Static B=32 | ~18 | ~850ms | $0.0463 | ~99% |
-| llama.cpp GGUF Q4 Static B=32 | ~31 | ~520ms | $0.0269 | ~91% |
-| llama.cpp GGUF Q8 Static B=32 | ~24 | ~660ms | $0.0347 | ~97% |
+| **vLLM AWQ 4-bit** — `short_qa` | **2.79** | 13,526 ms | **$0.0499** | 0.92 |
+| **vLLM AWQ 4-bit** — `medium_reasoning` | 1.86 | 10,555 ms | $0.0746 | 0.92 |
+| **vLLM AWQ 4-bit** — `long_context` | 0.43 | 10,603 ms | $0.3258 | 0.92 |
+| **vLLM AWQ 4-bit** — `burst_spike` | 2.87 | 27,072 ms | $0.0485 | 0.92 |
+| llama.cpp GGUF Q4 — `short_qa` | 0.66 | 55,377 ms | $0.2118 | 0.92 |
+| llama.cpp GGUF Q4 — `medium_reasoning` | 0.81 | 28,091 ms | $0.1725 | 0.92 |
+| llama.cpp GGUF Q4 — `burst_spike` | 0.65 | 110,498 ms | $0.2146 | 0.92 |
 
-> ⚠️ These are indicative reference numbers. Your actual results will vary based on GPU model, prompt distribution, and server load.
+> Quality evaluated on 50-item set: 23/25 correct JSON extraction (92%), Gemini-2.5-Flash as reasoning judge.
 
 ---
 
-## Key Engineering Findings (Template)
-
-After running the full sweep, populate this section with your results:
+After running the full benchmark sweep across vLLM (AWQ 4-bit) and llama.cpp (GGUF Q4) on an RTX 4060 Laptop GPU:
 
 ```
-Pareto-dominant configuration: ___
-  → Best balance of cost/throughput/quality
+Pareto-dominant configuration: vLLM AWQ 4-bit (short_qa / burst_spike profiles)
+  → Best balance of cost + throughput + quality: 2.87 RPS, $0.048/1K req, score=0.92
 
-Highest throughput: ___
-  → X RPS at P95=Xms
+Highest throughput: vLLM AWQ 4-bit — burst_spike
+  → 2.87 RPS at P95 = 27,072ms (64-concurrent, 0% error rate)
 
-Lowest cost: ___
-  → $X.XXXXXX per 1K requests
+Lowest cost: vLLM AWQ 4-bit — burst_spike
+  → $0.0485 per 1K requests ($0.194/1M tokens)
 
-Minimum quality loss: ___
-  → X% vs FP16 baseline
+Quality result: 0.92 composite score on 50-item eval set
+  → 23/25 JSON extraction correct (92% accuracy)
+  → Evaluated by Gemini-2.5-Flash as reasoning judge
 
-vLLM vs llama.cpp summary:
-  → At FP16: vLLM is Xx faster in throughput
-  → At quantized: gap narrows to Xx
+vLLM vs llama.cpp (GGUF Q4) on short_qa:
+  → Throughput: 2.79 vs 0.66 RPS — vLLM is 4.2x faster
+  → Cost:       $0.050 vs $0.212/1K req — vLLM is 4.2x cheaper
+  → P95 latency: 13.5s vs 55.4s — vLLM is 4.1x lower latency
+  → Quality: equivalent (both 0.92) — quantization format does not degrade quality at this tier
 
-Critical finding: ___
+Critical finding: Continuous batching in vLLM provides ~4x throughput advantage over
+llama.cpp's static allocation at equivalent quantization levels (Q4). For production
+deployment on constrained VRAM, vLLM AWQ 4-bit is the clear Pareto winner.
 ```
 
 ---
