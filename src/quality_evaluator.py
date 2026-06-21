@@ -65,7 +65,7 @@ load_dotenv()
 EVAL_SET_PATH = Path(__file__).parent.parent / "benchmarks" / "eval_set.json"
 RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "results"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_JUDGE_MODEL = os.getenv("GEMINI_JUDGE_MODEL", "gemini-1.5-flash")
+GEMINI_JUDGE_MODEL = os.getenv("GEMINI_JUDGE_MODEL", "gemini-2.5-flash")
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8000")
 LLAMACPP_BASE_URL = os.getenv("LLAMACPP_BASE_URL", "http://localhost:8080")
 DEFAULT_MAX_TOKENS = 512
@@ -133,22 +133,27 @@ async def gemini_judge_score(
 
     payload = {
         "system_instruction": {"parts": [{"text": JUDGE_SYSTEM_PROMPT}]},
-        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": user_message[:6000]}],  # cap to avoid context overflow
+        }],
         "generationConfig": {
             "temperature": 0.0,
-            "maxOutputTokens": 256,
-            # NOTE: No responseMimeType — it makes Gemini more likely to
-            # trigger safety filters on eval prompts that mention
-            # 'vulnerabilities', 'data loss', 'security', etc.
+            "maxOutputTokens": 64,  # score + short reason fits easily in 64 tokens
         },
     }
 
     async with semaphore:
-        for attempt in range(3):
+        for attempt in range(4):
             try:
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=45)) as resp:
+                    # Rate limit — exponential backoff
                     if resp.status == 429:
                         await asyncio.sleep(2 ** attempt)
+                        continue
+                    # Overloaded — retry with longer wait
+                    if resp.status == 503:
+                        await asyncio.sleep(5 * (attempt + 1))
                         continue
                     if resp.status != 200:
                         raw = await resp.text()
@@ -160,7 +165,6 @@ async def gemini_judge_score(
                     candidate = data.get("candidates", [{}])[0]
                     finish_reason = candidate.get("finishReason", "STOP")
                     if finish_reason in ("SAFETY", "RECITATION", "OTHER"):
-                        # Fall back to heuristic — don't retry, it will keep failing
                         return heuristic_reasoning_score(response, ref_for_fallback)
 
                     # Extract text safely
@@ -171,19 +175,25 @@ async def gemini_judge_score(
                     if not text:
                         return heuristic_reasoning_score(response, ref_for_fallback)
 
-                    # Parse JSON score — Gemini may wrap it in markdown
-                    json_match = re.search(r'\{.*?\}', text, re.DOTALL)
-                    if not json_match:
-                        raise ValueError(f"No JSON found in: {text[:100]}")
-                    parsed = json.loads(json_match.group())
-                    score = int(parsed.get("score", 0))
-                    if not (1 <= score <= 5):
-                        raise ValueError(f"Score out of range: {score}")
-                    return {"score": score, "reason": parsed.get("reason", "")}
+                    # Extract score directly with regex — robust against truncated JSON
+                    # Works even if the "reason" string is cut off mid-sentence
+                    score_match = re.search(r'"score"\s*:\s*([1-5])', text)
+                    if not score_match:
+                        # Try plain integer fallback (e.g. "Score: 4")
+                        score_match = re.search(r'\b([1-5])\b', text)
+                    if not score_match:
+                        raise ValueError(f"No score found in: {text[:120]}")
+
+                    score = int(score_match.group(1))
+                    reason_match = re.search(r'"reason"\s*:\s*"([^"]{3,})', text)
+                    reason = reason_match.group(1)[:200] if reason_match else text[:100]
+                    return {"score": score, "reason": reason}
+
             except Exception as exc:
-                if attempt == 2:
+                if attempt == 3:
                     return {"score": None, "reason": f"Judge error: {exc}"}
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
+
 
     return {"score": None, "reason": "All judge attempts failed"}
 
