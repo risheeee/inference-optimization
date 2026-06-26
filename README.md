@@ -300,7 +300,7 @@ inference-optimizer/
 
 ---
 
-## Expected Results (Reference Benchmarks)
+## Results 
 
 > **Hardware reference**: RTX 4060 Laptop GPU (8 GB VRAM), Llama-3-8B-Instruct, local @ $0.50/hr equivalent
 
